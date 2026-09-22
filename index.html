@@ -41,8 +41,8 @@
 <body>
 
   <h2>🚲 Find Nearest Bike QR</h2>
-  <button class="btn" onclick="findNearest()">Locate Nearest Parking</button>
-  <div id="status">Tap the button to find the nearest bike stop.</div>
+  <button class="btn" id="actionBtn" onclick="findNearest()">Locate Nearest Parking</button>
+  <div id="status">Loading parking spots database...</div>
 
   <div id="result" class="card">
     <div style="font-size: 13px; text-transform: uppercase; color: #888;">Nearest QR ID</div>
@@ -53,80 +53,116 @@
 
   <div id="map"></div>
 
-  <!-- Leaflet Map JS -->
+  <!-- PapaParse for parsing the CSV & Leaflet for the Map -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
   <script>
+    let parkingLots = [];
     let map = null;
+
+    // Load CSV file locally from the same GitHub repo (Zero CORS issues)
+    fetch('./bike_parking_lots.csv')
+      .then(res => {
+        if (!res.ok) throw new Error("Could not find bike_parking_lots.csv");
+        return res.text();
+      })
+      .then(csvText => {
+        const parsed = Papa.parse(csvText, { header: true, dynamicTyping: true, skipEmptyLines: true });
+        parkingLots = parsed.data;
+        document.getElementById('status').innerText = `Ready! Loaded ${parkingLots.length} parking spots.`;
+      })
+      .catch(err => {
+        document.getElementById('status').innerText = "Error: " + err.message;
+      });
+
+    // Haversine distance formula in meters
+    function getDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371e3;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
 
     function findNearest() {
       const status = document.getElementById('status');
-      if (!navigator.geolocation) {
-        status.innerText = "Geolocation not supported by your browser.";
+
+      if (parkingLots.length === 0) {
+        status.innerText = "Still loading parking lots, please wait...";
         return;
       }
 
       status.innerText = "Acquiring GPS location...";
 
-      navigator.geolocation.getCurrentPosition(async (pos) => {
+      navigator.geolocation.getCurrentPosition((pos) => {
         const userLat = pos.coords.latitude;
         const userLng = pos.coords.longitude;
-        status.innerText = "Searching for closest parking lot...";
 
-        try {
-          const res = await fetch(`https://mingjun.dev/bike-parking/?lat=${userLat}&lng=${userLng}`);
-          const data = await res.json();
+        let closest = null;
+        let minDistance = Infinity;
 
-          const destLat = data.location.lat;
-          const destLng = data.location.lng;
-
-          // Update Info Card
-          document.getElementById('qrId').innerText = data.id;
-          document.getElementById('dist').innerText = `${Math.round(data.distanceMeters)} meters away`;
-          document.getElementById('navLink').href = 
-            `https://www.google.com/maps/dir/?api=1&destination=${destLat},${destLng}&travelmode=walking`;
-          
-          document.getElementById('result').style.display = 'block';
-          document.getElementById('map').style.display = 'block';
-          status.innerText = "";
-
-          // Render / Update Leaflet Map
-          if (!map) {
-            map = L.map('map');
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-              maxZoom: 19,
-              attribution: '© OpenStreetMap'
-            }).addTo(map);
+        // Iterate through all spots (~2ms calculation time)
+        for (const spot of parkingLots) {
+          if (!spot.lat || !spot.lng) continue;
+          const dist = getDistance(userLat, userLng, spot.lat, spot.lng);
+          if (dist < minDistance) {
+            minDistance = dist;
+            closest = spot;
           }
-
-          // Clear prior markers
-          map.eachLayer((layer) => {
-            if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
-              map.removeLayer(layer);
-            }
-          });
-
-          // Blue marker for user
-          L.circleMarker([userLat, userLng], {
-            radius: 8,
-            color: '#007bff',
-            fillColor: '#007bff',
-            fillOpacity: 0.9
-          }).addTo(map).bindPopup("You are here");
-
-          // Green marker for destination bike spot
-          L.marker([destLat, destLng]).addTo(map)
-            .bindPopup(`<b>${data.id}</b><br>${Math.round(data.distanceMeters)}m away`)
-            .openPopup();
-
-          // Auto-zoom to show both user and bike stop
-          map.fitBounds([
-            [userLat, userLng],
-            [destLat, destLng]
-          ], { padding: [40, 40] });
-
-        } catch (err) {
-          status.innerText = "Failed to fetch: " + err.message;
         }
+
+        if (!closest) {
+          status.innerText = "No parking spots found.";
+          return;
+        }
+
+        // Update UI
+        document.getElementById('qrId').innerText = closest.name;
+        document.getElementById('dist').innerText = `${Math.round(minDistance)} meters away`;
+        document.getElementById('navLink').href = 
+          `https://www.google.com/maps/dir/?api=1&destination=${closest.lat},${closest.lng}&travelmode=walking`;
+
+        document.getElementById('result').style.display = 'block';
+        document.getElementById('map').style.display = 'block';
+        status.innerText = "";
+
+        // Render Leaflet Map
+        if (!map) {
+          map = L.map('map');
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+          }).addTo(map);
+        }
+
+        map.eachLayer((layer) => {
+          if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+            map.removeLayer(layer);
+          }
+        });
+
+        // User location marker (Blue circle)
+        L.circleMarker([userLat, userLng], {
+          radius: 8,
+          color: '#007bff',
+          fillColor: '#007bff',
+          fillOpacity: 0.9
+        }).addTo(map).bindPopup("You are here");
+
+        // Nearest parking lot marker
+        L.marker([closest.lat, closest.lng]).addTo(map)
+          .bindPopup(`<b>${closest.name}</b><br>${Math.round(minDistance)}m away`)
+          .openPopup();
+
+        // Fit map view to both points
+        map.fitBounds([
+          [userLat, userLng],
+          [closest.lat, closest.lng]
+        ], { padding: [40, 40] });
+
       }, (err) => {
         status.innerText = "GPS Error: " + err.message;
       }, { enableHighAccuracy: true });
