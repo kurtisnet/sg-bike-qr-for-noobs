@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Nearest Bike Parking</title>
 
+  <!-- On-Screen Error Catcher (Displays any JS error right on your phone screen) -->
+  <script>
+    window.onerror = function(msg, url, line) {
+      document.body.innerHTML += `
+        <div style="color:#721c24;background:#f8d7da;padding:12px;margin:15px;border-radius:8px;text-align:left;font-size:13px;border:1px solid #f5c6cb;">
+          <b>JavaScript Error:</b><br>${msg}<br><small>Line: ${line}</small>
+        </div>`;
+    };
+  </script>
+
   <!-- Leaflet Map CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
@@ -28,13 +38,12 @@
       border-radius: 12px; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
 
-    /* Results List Container */
     #resultsContainer {
       max-width: 450px; margin: 15px auto; display: none; text-align: left;
     }
     .section-title {
-      font-size: 15px; font-weight: 700; color: #6c757d; text-transform: uppercase;
-      letter-spacing: 0.5px; margin-bottom: 10px; text-align: left;
+      font-size: 14px; font-weight: 700; color: #6c757d; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 10px;
     }
     .spot-card {
       background: white; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
@@ -81,16 +90,176 @@
 
   <h2>🚲 Nearest Bike Parking Lots</h2>
   <button class="btn-locate" id="locateBtn" onclick="findNearest()">Locate Nearest 5</button>
-  <div id="status">Loading parking spots database...</div>
+  <div id="status">Connecting to parking database...</div>
 
-  <!-- Leaflet Map Container -->
   <div id="map"></div>
 
-  <!-- Top 5 Results Container -->
   <div id="resultsContainer">
     <div class="section-title">Closest 5 Parking Spots</div>
     <div id="spotsList"></div>
   </div>
 
-  <!-- PapaParse for CSV parsing & Leaflet for Map -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaPars
+  <!-- Leaflet Map JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    let parkingLots = [];
+    let map = null;
+
+    // Fetch and parse the CSV with native JS (zero external libraries)
+    async function loadDatabase() {
+      const status = document.getElementById('status');
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000); // 6 sec timeout
+
+        const res = await fetch('./bike_parking_lots.csv', { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: Could not find bike_parking_lots.csv in your repo.`);
+        }
+
+        const csvText = await res.text();
+        const lines = csvText.trim().split(/\r?\n/);
+        const parsed = [];
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          const parts = line.split(',');
+          if (parts.length >= 3) {
+            const name = parts[0].trim();
+            const lat = parseFloat(parts[1]);
+            const lng = parseFloat(parts[2]);
+            if (name && !isNaN(lat) && !isNaN(lng)) {
+              parsed.push({ name, lat, lng });
+            }
+          }
+        }
+
+        parkingLots = parsed;
+        status.innerText = `Ready! Loaded ${parkingLots.length} parking spots.`;
+      } catch (err) {
+        status.innerHTML = `<span style="color:#dc3545;">Failed to load CSV: ${err.message}</span>`;
+      }
+    }
+
+    // Call load immediately
+    loadDatabase();
+
+    // Haversine formula
+    function getDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371e3;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    // 1-Tap Copy
+    function copyCode(text, btn) {
+      navigator.clipboard.writeText(text).then(() => {
+        const prevText = btn.innerText;
+        btn.innerText = "Copied! ✓";
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.innerText = prevText;
+          btn.classList.remove("copied");
+        }, 1500);
+      }).catch(err => {
+        alert("Copy error: " + err);
+      });
+    }
+
+    function findNearest() {
+      const status = document.getElementById('status');
+
+      if (parkingLots.length === 0) {
+        status.innerText = "Database is not loaded yet. Check error message above.";
+        return;
+      }
+
+      status.innerText = "Acquiring GPS location...";
+
+      navigator.geolocation.getCurrentPosition((pos) => {
+        const userLat = pos.coords.latitude;
+        const userLng = pos.coords.longitude;
+
+        status.innerText = "Calculating nearest spots...";
+
+        const withDistances = parkingLots.map(spot => ({
+          ...spot,
+          distance: getDistance(userLat, userLng, spot.lat, spot.lng)
+        }));
+
+        withDistances.sort((a, b) => a.distance - b.distance);
+        const top5 = withDistances.slice(0, 5);
+
+        const listDiv = document.getElementById('spotsList');
+        listDiv.innerHTML = "";
+
+        top5.forEach((spot, idx) => {
+          const isFirst = idx === 0;
+          const card = document.createElement('div');
+          card.className = `spot-card ${isFirst ? 'closest' : ''}`;
+          card.innerHTML = `
+            <div class="spot-info">
+              <span class="spot-rank">${isFirst ? '★ CLOSEST' : '#' + (idx + 1)}</span>
+              <div class="spot-code">${spot.name}</div>
+              <div class="spot-dist">${Math.round(spot.distance)} meters away</div>
+            </div>
+            <div class="spot-actions">
+              <button class="btn-copy" onclick="copyCode('${spot.name}', this)">Copy ID</button>
+              <a class="btn-nav" target="_blank" href="https://www.google.com/maps/dir/?api=1&destination=${spot.lat},${spot.lng}&travelmode=walking">Go ➔</a>
+            </div>
+          `;
+          listDiv.appendChild(card);
+        });
+
+        document.getElementById('resultsContainer').style.display = 'block';
+        document.getElementById('map').style.display = 'block';
+        status.innerText = "";
+
+        // Map rendering
+        if (!map) {
+          map = L.map('map');
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+          }).addTo(map);
+        }
+
+        map.eachLayer((layer) => {
+          if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+            map.removeLayer(layer);
+          }
+        });
+
+        const bounds = [[userLat, userLng]];
+
+        L.circleMarker([userLat, userLng], {
+          radius: 8,
+          color: '#007bff',
+          fillColor: '#007bff',
+          fillOpacity: 0.9
+        }).addTo(map).bindPopup("<b>You are here</b>");
+
+        top5.forEach((spot, idx) => {
+          bounds.push([spot.lat, spot.lng]);
+          const marker = L.marker([spot.lat, spot.lng]).addTo(map);
+          marker.bindPopup(`<b>#${idx + 1}: ${spot.name}</b><br>${Math.round(spot.distance)}m away`);
+          if (idx === 0) marker.openPopup();
+        });
+
+        map.fitBounds(bounds, { padding: [30, 30] });
+
+      }, (err) => {
+        status.innerText = "GPS Error: " + err.message;
+      }, { enableHighAccuracy: true });
+    }
+  </script>
+</body>
+</html>
