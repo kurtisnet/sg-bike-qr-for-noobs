@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Nearest Bike Parking</title>
+
+  <!-- Leaflet Map CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0; padding: 16px; text-align: center; background: #f8f9fa; color: #333;
+    }
+    h2 { margin-top: 10px; font-size: 22px; }
+    .btn {
+      width: 100%; max-width: 400px; padding: 14px; font-size: 16px; font-weight: bold;
+      border-radius: 10px; border: none; background: #007bff; color: white; cursor: pointer;
+      box-shadow: 0 4px 6px rgba(0,123,255,0.2);
+    }
+    .btn:active { transform: scale(0.98); }
+    #status { margin: 12px 0; font-size: 14px; color: #666; }
+    .card {
+      margin: 15px auto; padding: 16px; border-radius: 12px; background: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08); max-width: 400px; display: none;
+    }
+    .code { font-size: 28px; font-weight: 800; color: #28a745; letter-spacing: 1px; }
+    .distance { font-size: 16px; color: #666; margin: 4px 0 14px 0; }
+    .nav-btn {
+      display: block; width: 100%; padding: 10px; background: #28a745; color: white;
+      text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 15px;
+    }
+    #map {
+      height: 320px; width: 100%; max-width: 400px; margin: 15px auto;
+      border-radius: 12px; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+  </style>
+</head>
+<body>
+
+  <h2>🚲 Find Nearest Bike QR</h2>
+  <button class="btn" onclick="findNearest()">Locate Nearest Parking</button>
+  <div id="status">Tap the button to find the nearest bike stop.</div>
+
+  <div id="result" class="card">
+    <div style="font-size: 13px; text-transform: uppercase; color: #888;">Nearest QR ID</div>
+    <div id="qrId" class="code">-</div>
+    <div id="dist" class="distance">-</div>
+    <a id="navLink" class="nav-btn" target="_blank">Navigate in Google Maps</a>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- Leaflet Map JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    let map = null;
+
+    function findNearest() {
+      const status = document.getElementById('status');
+      if (!navigator.geolocation) {
+        status.innerText = "Geolocation not supported by your browser.";
+        return;
+      }
+
+      status.innerText = "Acquiring GPS location...";
+
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const userLat = pos.coords.latitude;
+        const userLng = pos.coords.longitude;
+        status.innerText = "Searching for closest parking lot...";
+
+        try {
+          const res = await fetch(`https://mingjun.dev/bike-parking/?lat=${userLat}&lng=${userLng}`);
+          const data = await res.json();
+
+          const destLat = data.location.lat;
+          const destLng = data.location.lng;
+
+          // Update Info Card
+          document.getElementById('qrId').innerText = data.id;
+          document.getElementById('dist').innerText = `${Math.round(data.distanceMeters)} meters away`;
+          document.getElementById('navLink').href = 
+            `https://www.google.com/maps/dir/?api=1&destination=${destLat},${destLng}&travelmode=walking`;
+          
+          document.getElementById('result').style.display = 'block';
+          document.getElementById('map').style.display = 'block';
+          status.innerText = "";
+
+          // Render / Update Leaflet Map
+          if (!map) {
+            map = L.map('map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              maxZoom: 19,
+              attribution: '© OpenStreetMap'
+            }).addTo(map);
+          }
+
+          // Clear prior markers
+          map.eachLayer((layer) => {
+            if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+              map.removeLayer(layer);
+            }
+          });
+
+          // Blue marker for user
+          L.circleMarker([userLat, userLng], {
+            radius: 8,
+            color: '#007bff',
+            fillColor: '#007bff',
+            fillOpacity: 0.9
+          }).addTo(map).bindPopup("You are here");
+
+          // Green marker for destination bike spot
+          L.marker([destLat, destLng]).addTo(map)
+            .bindPopup(`<b>${data.id}</b><br>${Math.round(data.distanceMeters)}m away`)
+            .openPopup();
+
+          // Auto-zoom to show both user and bike stop
+          map.fitBounds([
+            [userLat, userLng],
+            [destLat, destLng]
+          ], { padding: [40, 40] });
+
+        } catch (err) {
+          status.innerText = "Failed to fetch: " + err.message;
+        }
+      }, (err) => {
+        status.innerText = "GPS Error: " + err.message;
+      }, { enableHighAccuracy: true });
+    }
+  </script>
+</body>
+</html>
